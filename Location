@@ -1,0 +1,224 @@
+import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:flutter_polyline_points/flutter_polyline_points.dart';
+import 'package:location/location.dart' as loc;
+import 'package:geocoding/geocoding.dart' as geo;
+import 'package:flutter_typeahead/flutter_typeahead.dart'; // Importing the correct package
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+class LocationPage extends StatefulWidget {
+  @override
+  State<LocationPage> createState() => MapScreenState();
+}
+
+class MapScreenState extends State<LocationPage> {
+  late GoogleMapController mapController;
+  late loc.LocationData _currentLocation;
+  late loc.Location location;
+  final TextEditingController _destinationController = TextEditingController();
+
+  final LatLng _center = const LatLng(17.366, 78.476);
+  LatLng? _destination;
+  final Set<Polyline> _polylines = {};
+  final List<LatLng> _polylineCoordinates = [];
+  late PolylinePoints polylinePoints;
+  final Set<Marker> _markers = {};
+
+  @override
+  void initState() {
+    super.initState();
+    location = loc.Location();
+    polylinePoints = PolylinePoints();
+    _getCurrentLocation();
+  }
+
+  void _onMapCreated(GoogleMapController controller) {
+    mapController = controller;
+  }
+
+  _getCurrentLocation() async {
+    final permissionStatus = await location.hasPermission();
+    if (permissionStatus == loc.PermissionStatus.denied) {
+      await location.requestPermission();
+    }
+
+    _currentLocation = await location.getLocation();
+    location.onLocationChanged.listen((loc.LocationData currentLocation) {
+      setState(() {
+        _currentLocation = currentLocation;
+        LatLng currentLatLng =
+            LatLng(_currentLocation.latitude!, _currentLocation.longitude!);
+        _updateCameraPosition(currentLatLng);
+        _updateOrAddMarker(currentLatLng, "Current Location");
+      });
+
+      if (_destination != null) {
+        _getDirections(); // Update directions when location changes
+      }
+    });
+  }
+
+  _updateCameraPosition(LatLng position) {
+    mapController.animateCamera(CameraUpdate.newCameraPosition(
+      CameraPosition(target: position, zoom: 15.0),
+    ));
+  }
+
+  _getDirections() async {
+    if (_destination != null &&
+        _currentLocation.latitude != null &&
+        _currentLocation.longitude != null) {
+      PolylineResult result = await polylinePoints.getRouteBetweenCoordinates(
+        'AIzaSyBVn1idxtxfsovEZx8uUVc4NEp1pn9_FEE', // Replace with your Google Maps API key
+        PointLatLng(_currentLocation.latitude!, _currentLocation.longitude!),
+        PointLatLng(_destination!.latitude, _destination!.longitude),
+      );
+
+      if (result.points.isNotEmpty) {
+        _polylineCoordinates.clear();
+        result.points.forEach((PointLatLng point) {
+          _polylineCoordinates.add(LatLng(point.latitude, point.longitude));
+        });
+
+        setState(() {
+          _polylines.clear();
+          _polylines.add(Polyline(
+            polylineId: PolylineId('route'),
+            points: _polylineCoordinates,
+            width: 5,
+            color: Colors.blue,
+          ));
+        });
+      }
+    }
+  }
+
+  Future<List<String>> _getPlaceSuggestions(String input) async {
+    final response = await http.get(
+      Uri.parse(
+        'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=$input&key=AIzaSyBVn1idxtxfsovEZx8uUVc4NEp1pn9_FEE',
+      ),
+    );
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      final suggestions = data['predictions'] as List;
+      return suggestions.map((e) => e['description'] as String).toList();
+    } else {
+      throw Exception('Failed to load suggestions');
+    }
+  }
+
+  _setDestination(String destination) async {
+    try {
+      var locations = await geo.locationFromAddress(destination);
+      if (locations.isNotEmpty) {
+        LatLng destinationLatLng =
+            LatLng(locations[0].latitude, locations[0].longitude);
+        setState(() {
+          _destination = destinationLatLng;
+          _updateOrAddMarker(_destination!, "Destination");
+          _getDirections();
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Destination not found')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error finding destination')),
+      );
+    }
+  }
+
+  _updateOrAddMarker(LatLng position, String title) {
+    setState(() {
+      _markers.removeWhere((marker) => marker.markerId.value == title);
+      _markers.add(
+        Marker(
+          markerId: MarkerId(title),
+          position: position,
+          infoWindow: InfoWindow(
+            title: title,
+          ),
+        ),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Column(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 0.0, top: 0),
+              child: GoogleMap(
+                onMapCreated: _onMapCreated,
+                initialCameraPosition: CameraPosition(
+                  target: _center,
+                  zoom: 11.0,
+                ),
+                polylines: _polylines,
+                markers: _markers,
+                myLocationEnabled: true,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 50),
+            child: Column(
+              children: [
+                TypeAheadFormField(
+                  textFieldConfiguration: TextFieldConfiguration(
+                    controller: _destinationController,
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12.0),
+                        borderSide: BorderSide.none,
+                      ),
+                      hintText: 'Destination',
+                      hintStyle: TextStyle(
+                          color: const Color.fromARGB(255, 45, 45, 45)),
+                      suffixIcon: IconButton(
+                        icon: Icon(Icons.search, color: Colors.blue),
+                        onPressed: () {
+                          _setDestination(_destinationController.text);
+                        },
+                      ),
+                    ),
+                  ),
+                  suggestionsCallback: _getPlaceSuggestions,
+                  itemBuilder: (context, suggestion) {
+                    return ListTile(
+                      leading: Icon(Icons.location_on),
+                      title: Text(suggestion),
+                    );
+                  },
+                  onSuggestionSelected: (suggestion) {
+                    _destinationController.text = suggestion;
+                    _setDestination(suggestion);
+                  },
+                ),
+                SizedBox(
+                    height:
+                        10), // Add some space between the TypeAheadFormField and the button
+                ElevatedButton(
+                  onPressed: () {
+                    // Define what happens when the button is pressed
+                    print('Load to vehicle');
+                  },
+                  child: Text('Load to vehicle'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
