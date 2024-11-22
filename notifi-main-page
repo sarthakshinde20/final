@@ -1,0 +1,142 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'notification.dart'; // Import the NotificationPage
+
+// Background message handler function
+Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
+  await storeNotification(message); // Store the notification data
+}
+
+Future<void> storeNotification(RemoteMessage message) async {
+  final prefs = await SharedPreferences.getInstance();
+  List<String> notifications = prefs.getStringList('notifications') ?? [];
+
+  // Add the new notification to the list
+  String? title = message.notification?.title;
+  String? body = message.notification?.body;
+  if (title != null && body != null) {
+    notifications.add(json.encode({
+      "title": title,
+      "body": body,
+      "time": DateTime.now().toIso8601String(),
+    }));
+    await prefs.setStringList('notifications', notifications); // Save it back
+  }
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Firebase and background message handler
+  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+
+  await Firebase.initializeApp();
+  await MyFirebaseMessagingService.setupFirebaseMessaging();
+
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp])
+      .then((_) {
+    runApp(const MyApp());
+  });
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      initialRoute: '/',
+      routes: {
+        '/': (context) => const HomePage(),
+        '/notification': (context) => const NotificationPage(),
+      },
+    );
+  }
+}
+
+class HomePage extends StatelessWidget {
+  const HomePage({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Home Page"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.notifications),
+            onPressed: () => Navigator.pushNamed(context, '/notification'),
+          ),
+        ],
+      ),
+      body: const Center(
+        child: Text("Welcome to the Home Page"),
+      ),
+    );
+  }
+}
+
+class MyFirebaseMessagingService {
+  static Future<void> setupFirebaseMessaging() async {
+    FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+        FlutterLocalNotificationsPlugin();
+
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+
+    final InitializationSettings initializationSettings =
+        InitializationSettings(android: initializationSettingsAndroid);
+
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'my_channel_id',
+      'My Notifications',
+      description: 'This channel is used for important notifications.',
+      importance: Importance.high,
+    );
+
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+
+    await FirebaseMessaging.instance.requestPermission();
+
+    // Subscribe to a topic
+    await FirebaseMessaging.instance.subscribeToTopic('example_topic');
+    print("Subscribed to example_topic");
+
+    // Handle foreground messages
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+      if (message.notification != null) {
+        flutterLocalNotificationsPlugin.show(
+          message.hashCode,
+          message.notification!.title,
+          message.notification!.body,
+          NotificationDetails(
+            android: AndroidNotificationDetails(
+              channel.id,
+              channel.name,
+              channelDescription: channel.description,
+              importance: Importance.high,
+              priority: Priority.high,
+            ),
+          ),
+        );
+        await storeNotification(message); // Store the notification
+      }
+    });
+
+    // Handle background and closed state notifications
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      storeNotification(message);
+    });
+  }
+}
